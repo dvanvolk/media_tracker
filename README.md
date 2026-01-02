@@ -14,13 +14,13 @@ Track Movies and TV Shows from DVD's
 ### 1. Install Python Dependencies
 
 ```bash
-pip install flask flask-cors pandas requests
+pip install flask flask-cors pandas requests python-dotenv
 ```
 
 ### 2. Configure API Keys
 
-Edit the Flask backend (`media_tracker_flask.py`) and update these values:
-
+Edit the Flask backend (`.env`) and update these values:
+(use the example file as a reference)
 ```python
 RADARR_URL = "http://192.168.1.10:7878"  # Your Radarr URL
 RADARR_API_KEY = "your_radarr_api_key_here"

@@ -1,20 +1,22 @@
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 import requests
 import pandas as pd
 import os
 import threading
+from dotenv import load_dotenv
 
 # ================= CONFIG =================
+load_dotenv()
 
-RADARR_URL = "http://192.168.1.10:7878"
-RADARR_API_KEY = "RADARR_API_KEY"
+RADARR_URL = os.getenv("RADARR_URL", "http://192.168.1.10:7878")
+RADARR_API_KEY = os.getenv("RADARR_API_KEY")
 
-SONARR_URL = "http://192.168.1.10:8989"
-SONARR_API_KEY = "SONARR_API_KEY"
+SONARR_URL = os.getenv("SONARR_URL", "http://192.168.1.10:8989")
+SONARR_API_KEY = os.getenv("SONARR_API_KEY")
 
-MOVIE_ROOT = "/movies"
-TV_ROOT = "/tv"
+MOVIE_ROOT = os.getenv("MOVIE_ROOT", "/movies")
+TV_ROOT = os.getenv("TV_ROOT", "/tv")
 
 CSV_FILE = "media_library.csv"
 
@@ -29,7 +31,9 @@ CORS(app)  # Enable CORS for React frontend
 
 def load_or_create_db():
     if os.path.exists(CSV_FILE):
+        print(f"Loading database from {CSV_FILE}")
         return pd.read_csv(CSV_FILE)
+    print("Creating new database")
     return pd.DataFrame(columns=[
         "type", "title", "year",
         "tmdb_id", "tvdb_id",
@@ -38,10 +42,8 @@ def load_or_create_db():
         "source"
     ])
 
-
 def save_db(df):
     df.to_csv(CSV_FILE, index=False)
-
 
 # ========== IMPORT FROM RADARR ============
 
@@ -139,11 +141,10 @@ def search_tmdb_movie(title):
             params={"term": title}
         )
         results = r.json()
-        return results[0] if results else None
+        return results if results else []
     except Exception as e:
         print(f"Error searching TMDB: {e}")
-        return None
-
+        return []
 
 def search_tvdb_series(title):
     try:
@@ -153,11 +154,10 @@ def search_tvdb_series(title):
             params={"term": title}
         )
         results = r.json()
-        return results[0] if results else None
+        return results if results else []
     except Exception as e:
         print(f"Error searching TVDB: {e}")
-        return None
-
+        return []
 
 # ========== ADD TO RADARR =================
 
@@ -198,6 +198,12 @@ def add_series(series):
         print(f"Error adding series to Sonarr: {e}")
         return False
 
+# ============ WEB ROUTES ==================
+
+@app.route('/')
+def index():
+    """Serve the main page"""
+    return send_from_directory('.', 'index.html')
 
 # ============ API ROUTES ==================
 
@@ -221,10 +227,9 @@ def get_media():
     df = load_or_create_db()
     return jsonify(df.to_dict('records'))
 
-
-@app.route('/api/scan', methods=['POST'])
-def scan_barcode():
-    """Scan a new barcode"""
+@app.route('/api/lookup', methods=['POST'])
+def lookup():
+    """Lookup barcode and search for matches"""
     data = request.json
     barcode = data.get('barcode', '').strip()
 
@@ -239,70 +244,157 @@ def scan_barcode():
 
     # Lookup barcode
     title = lookup_barcode(barcode)
-    if not title:
-        return jsonify({'error': 'Barcode not found in database'}), 404
-
+    suggested_title = title if title else ""
+    
     # Guess type
-    media_type = guess_type(title)
+    media_type = guess_type(suggested_title) if suggested_title else "movie"
+    
+    # Search both databases
+    movie_results = []
+    series_results = []
+    
+    if suggested_title:
+        if media_type == "movie":
+            movie_results = search_tmdb_movie(suggested_title)
+            # Also check if it exists in our database
+            for result in movie_results:
+                existing = df[(df['type'] == 'movie') & (df['tmdb_id'] == result['tmdbId'])]
+                if not existing.empty:
+                    result['already_in_library'] = True
+        else:
+            series_results = search_tvdb_series(suggested_title)
+            # Also check if it exists in our database
+            for result in series_results:
+                existing = df[(df['type'] == 'series') & (df['tvdb_id'] == result['tvdbId'])]
+                if not existing.empty:
+                    result['already_in_library'] = True
+    
+    return jsonify({
+        'barcode': barcode,
+        'suggested_title': suggested_title,
+        'suggested_type': media_type,
+        'movie_results': movie_results[:10],  # Limit to 10 results
+        'series_results': series_results[:10]
+    })
 
-    # Search and add
+@app.route('/api/search', methods=['POST'])
+def search():
+    """Manual search for movies or series"""
+    data = request.json
+    query = data.get('query', '').strip()
+    media_type = data.get('type', 'movie')
+    
+    if not query:
+        return jsonify({'error': 'No search query provided'}), 400
+    
     if media_type == 'movie':
-        movie = search_tmdb_movie(title)
-        if not movie:
-            return jsonify({'error': f'Movie not found: {title}'}), 404
+        results = search_tmdb_movie(query)
+    else:
+        results = search_tvdb_series(query)
+    
+    return jsonify({
+        'results': results[:10],
+        'type': media_type
+    })
 
-        # Add to Radarr
-        add_movie(movie)
-
-        # Add to database
-        new_row = {
-            "type": "movie",
-            "title": movie["title"],
-            "year": movie["year"],
-            "tmdb_id": movie["tmdbId"],
-            "tvdb_id": None,
-            "season_count": None,
-            "has_physical": True,
-            "barcode": barcode,
-            "source": "barcode"
-        }
-
-        df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
-        save_db(df)
-
-        return jsonify({
-            'success': True,
-            'item': new_row
-        })
-
+@app.route('/api/confirm', methods=['POST'])
+def confirm_add():
+    """Confirm and add selected item to database"""
+    data = request.json
+    barcode = data.get('barcode', '').strip()
+    media_type = data.get('type')
+    selected_item = data.get('item')
+    
+    if not barcode or not media_type or not selected_item:
+        return jsonify({'error': 'Missing required data'}), 400
+    
+    df = load_or_create_db()
+    
+    # Check if already scanned with this barcode
+    if barcode in df['barcode'].values:
+        return jsonify({'error': 'Barcode already scanned'}), 400
+    
+    if media_type == 'movie':
+        # Check if movie already exists in library
+        existing = df[(df['type'] == 'movie') & (df['tmdb_id'] == selected_item['tmdbId'])]
+        
+        if not existing.empty:
+            # Update existing entry to mark as physical
+            df.loc[existing.index, 'has_physical'] = True
+            df.loc[existing.index, 'barcode'] = barcode
+            save_db(df)
+            
+            return jsonify({
+                'success': True,
+                'item': df.loc[existing.index].iloc[0].to_dict(),
+                'updated': True
+            })
+        else:
+            # Add to Radarr
+            add_movie(selected_item)
+            
+            # Add to database
+            new_row = {
+                "type": "movie",
+                "title": selected_item["title"],
+                "year": selected_item.get("year"),
+                "tmdb_id": selected_item["tmdbId"],
+                "tvdb_id": None,
+                "season_count": None,
+                "has_physical": True,
+                "barcode": barcode,
+                "source": "barcode"
+            }
+            
+            df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+            save_db(df)
+            
+            return jsonify({
+                'success': True,
+                'item': new_row,
+                'updated': False
+            })
+    
     else:  # series
-        series = search_tvdb_series(title)
-        if not series:
-            return jsonify({'error': f'TV series not found: {title}'}), 404
-
-        # Add to Sonarr
-        add_series(series)
-
-        # Add to database
-        new_row = {
-            "type": "series",
-            "title": series["title"],
-            "year": series["year"],
-            "tmdb_id": None,
-            "tvdb_id": series["tvdbId"],
-            "season_count": len(series.get("seasons", [])),
-            "has_physical": True,
-            "barcode": barcode,
-            "source": "barcode"
-        }
-
-        df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
-        save_db(df)
-
-        return jsonify({
-            'success': True,
-            'item': new_row
-        })
+        # Check if series already exists in library
+        existing = df[(df['type'] == 'series') & (df['tvdb_id'] == selected_item['tvdbId'])]
+        
+        if not existing.empty:
+            # Update existing entry to mark as physical
+            df.loc[existing.index, 'has_physical'] = True
+            df.loc[existing.index, 'barcode'] = barcode
+            save_db(df)
+            
+            return jsonify({
+                'success': True,
+                'item': df.loc[existing.index].iloc[0].to_dict(),
+                'updated': True
+            })
+        else:
+            # Add to Sonarr
+            add_series(selected_item)
+            
+            # Add to database
+            new_row = {
+                "type": "series",
+                "title": selected_item["title"],
+                "year": selected_item.get("year"),
+                "tmdb_id": None,
+                "tvdb_id": selected_item["tvdbId"],
+                "season_count": len(selected_item.get("seasons", [])),
+                "has_physical": True,
+                "barcode": barcode,
+                "source": "barcode"
+            }
+            
+            df = pd.concat([df, pd.DataFrame([new_row])], ignore_index=True)
+            save_db(df)
+            
+            return jsonify({
+                'success': True,
+                'item': new_row,
+                'updated': False
+            })
 
 
 @app.route('/api/sync', methods=['POST'])
@@ -329,6 +421,7 @@ def initialize_app():
 
 if __name__ == "__main__":
     # Initialize database
+    print("starting media tracker...")
     initialize_app()
 
     # Run Flask app
