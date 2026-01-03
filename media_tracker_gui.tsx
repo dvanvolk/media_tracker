@@ -87,6 +87,7 @@ const MediaTrackerGUI = () => {
       }
 
       // Store scan details with all steps
+      console.log('Scan response data:', data); // Debug log
       setScanDetails({
         barcode: data.barcode,
         steps: data.steps || [],
@@ -245,14 +246,14 @@ const MediaTrackerGUI = () => {
           )}
         </div>
 
-        {/* Scan Details */}
+        {/* Scan Details - Always show when scanDetails exists */}
         {scanDetails && (
           <div className="bg-white/10 backdrop-blur-lg rounded-2xl p-8 border border-white/20 shadow-xl mb-8">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-2xl font-bold text-white">Last Scan Details</h2>
+            <div className="flex items-center justify-between mb-6">
+              <h2 className="text-2xl font-bold text-white">Scan Details</h2>
               <button
                 onClick={() => setScanDetails(null)}
-                className="text-white hover:text-red-400 transition-colors"
+                className="text-white hover:text-red-400 transition-colors p-1"
                 title="Clear scan details"
               >
                 <X className="w-6 h-6" />
@@ -269,11 +270,11 @@ const MediaTrackerGUI = () => {
                 <p className="text-2xl font-mono text-purple-300">{scanDetails.barcode}</p>
               </div>
 
-              {/* Steps */}
-              {scanDetails.steps && scanDetails.steps.length > 0 && (
-                <div className="bg-white/5 rounded-lg p-4 border border-white/10">
-                  <h3 className="text-lg font-semibold text-white mb-3">Scan Steps</h3>
-                  <div className="space-y-2">
+              {/* Steps - Always show */}
+              <div className="bg-white/5 rounded-lg p-4 border border-white/10">
+                <h3 className="text-lg font-semibold text-white mb-3">Scan Process Steps</h3>
+                {scanDetails.steps && scanDetails.steps.length > 0 ? (
+                  <div className="space-y-3">
                     {scanDetails.steps.map((step, idx) => {
                       const getStatusColor = (status) => {
                         switch(status) {
@@ -306,23 +307,31 @@ const MediaTrackerGUI = () => {
                       };
 
                       return (
-                        <div key={idx} className="flex items-start gap-3 p-2 bg-white/5 rounded">
-                          <span className={`font-bold ${getStatusColor(step.status)}`}>
+                        <div key={idx} className="flex items-start gap-3 p-3 bg-white/5 rounded-lg border border-white/10">
+                          <div className={`flex-shrink-0 w-8 h-8 rounded-full flex items-center justify-center font-bold text-lg ${getStatusColor(step.status)} bg-white/10`}>
                             {getStatusIcon(step.status)}
-                          </span>
+                          </div>
                           <div className="flex-1">
-                            <p className="text-white font-medium">{step.action}</p>
+                            <div className="flex items-center gap-2 mb-1">
+                              <p className="text-white font-semibold">{step.action}</p>
+                              <span className={`text-xs px-2 py-1 rounded ${getStatusColor(step.status)} bg-white/10`}>
+                                {step.status}
+                              </span>
+                            </div>
                             {step.details && (
                               <p className="text-purple-300 text-sm mt-1">{step.details}</p>
                             )}
                             {step.action_taken && (
-                              <p className="text-green-300 text-sm mt-1 font-semibold">{step.action_taken}</p>
+                              <p className="text-green-300 text-sm mt-2 font-semibold bg-green-500/10 p-2 rounded">
+                                {step.action_taken}
+                              </p>
                             )}
                             {step.matches && step.matches.length > 0 && (
-                              <div className="mt-2 space-y-1">
+                              <div className="mt-2 space-y-2">
+                                <p className="text-purple-200 text-xs font-semibold">Matches found:</p>
                                 {step.matches.map((match, mIdx) => (
-                                  <div key={mIdx} className="text-xs text-purple-200 bg-white/5 p-2 rounded">
-                                    {match.title} ({match.year}) - {match.similarity}% match
+                                  <div key={mIdx} className="text-sm text-purple-200 bg-white/5 p-2 rounded border border-white/10">
+                                    <span className="font-semibold">{match.title}</span> ({match.year}) - <span className="text-green-300">{match.similarity}% match</span>
                                   </div>
                                 ))}
                               </div>
@@ -332,8 +341,13 @@ const MediaTrackerGUI = () => {
                       );
                     })}
                   </div>
-                </div>
-              )}
+                ) : (
+                  <div className="text-center py-4">
+                    <p className="text-purple-300 text-sm">No step information available</p>
+                    <p className="text-purple-400 text-xs mt-1">Steps will appear here during scanning</p>
+                  </div>
+                )}
+              </div>
 
               {/* Lookup Results */}
               {scanDetails.suggested_title && (
@@ -352,23 +366,52 @@ const MediaTrackerGUI = () => {
               {/* Local Search Results */}
               {scanDetails.local_results && scanDetails.local_results.length > 0 && (
                 <div className="bg-green-500/10 rounded-lg p-4 border border-green-500/20">
-                  <h3 className="text-lg font-semibold text-white mb-2">
+                  <h3 className="text-lg font-semibold text-white mb-3">
                     Local Database Matches ({scanDetails.local_results.length})
                   </h3>
-                  <div className="space-y-2 max-h-64 overflow-y-auto">
+                  <div className="space-y-3 max-h-96 overflow-y-auto">
                     {scanDetails.local_results.map((result, idx) => (
-                      <div key={idx} className="bg-white/5 rounded p-3">
-                        <div className="flex items-start justify-between">
-                          <div>
-                            <p className="text-white font-semibold">{result.title}</p>
-                            <p className="text-green-300 text-sm">
-                              {result.type} • {result.year} • {result.similarity?.toFixed(0) || 0}% match
-                            </p>
+                      <div key={idx} className="bg-white/5 rounded-lg p-4 border border-white/10 hover:bg-white/10 transition-colors">
+                        <div className="flex items-start justify-between mb-2">
+                          <div className="flex-1">
+                            <p className="text-white font-bold text-lg">{result.title}</p>
+                            <div className="flex items-center gap-2 mt-1 flex-wrap">
+                              <span className="text-green-300 text-sm">
+                                {result.type === 'movie' ? '🎬 Movie' : '📺 TV Show'}
+                              </span>
+                              {result.year && (
+                                <span className="text-purple-300 text-sm">• {result.year}</span>
+                              )}
+                              {result.similarity && (
+                                <span className="text-blue-300 text-sm">• {result.similarity.toFixed(0)}% match</span>
+                              )}
+                            </div>
                           </div>
                           {result.has_physical && (
-                            <span className="px-2 py-1 bg-green-500/20 border border-green-500/50 text-green-300 text-xs rounded">
-                              Physical
+                            <span className="px-3 py-1 bg-green-500/20 border border-green-500/50 text-green-300 text-xs rounded font-semibold">
+                              ✓ Physical
                             </span>
+                          )}
+                        </div>
+                        <div className="mt-2 space-y-1">
+                          {result.genres && (
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <span className="text-purple-200 text-xs">Genres:</span>
+                              {result.genres.split(',').map((genre, gIdx) => (
+                                <span key={gIdx} className="px-2 py-1 bg-purple-500/20 border border-purple-500/30 text-purple-200 text-xs rounded">
+                                  {genre.trim()}
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                          {result.tmdb_id && (
+                            <p className="text-purple-300 text-xs">TMDB ID: {result.tmdb_id}</p>
+                          )}
+                          {result.tvdb_id && (
+                            <p className="text-purple-300 text-xs">TVDB ID: {result.tvdb_id}</p>
+                          )}
+                          {result.barcode && (
+                            <p className="text-purple-300 text-xs">Barcode: {result.barcode}</p>
                           )}
                         </div>
                       </div>
@@ -379,15 +422,73 @@ const MediaTrackerGUI = () => {
 
               {/* Final Result */}
               {scanDetails.item && (
-                <div className="bg-gradient-to-r from-purple-500/20 to-blue-500/20 rounded-lg p-4 border border-purple-500/30">
-                  <h3 className="text-lg font-semibold text-white mb-2">
-                    {scanDetails.toggled ? '✓ Toggled Physical Copy' : scanDetails.updated ? '✓ Updated Entry' : '✓ Result'}
+                <div className="bg-gradient-to-r from-purple-500/20 to-blue-500/20 rounded-lg p-6 border border-purple-500/30">
+                  <h3 className="text-lg font-semibold text-white mb-3">
+                    {scanDetails.toggled ? '✓ Toggled Physical Copy' : scanDetails.updated ? '✓ Updated Entry' : '✓ Final Result'}
                   </h3>
-                  <p className="text-2xl font-bold text-white">{scanDetails.item.title}</p>
-                  <p className="text-purple-300 text-sm mt-1">
-                    {scanDetails.item.type === 'movie' ? 'Movie' : 'TV Show'} • {scanDetails.item.year}
-                    {scanDetails.item.has_physical && ' • Has Physical Copy'}
-                  </p>
+                  <p className="text-3xl font-bold text-white mb-3">{scanDetails.item.title}</p>
+                  
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-3 flex-wrap">
+                      <span className="text-purple-300">
+                        {scanDetails.item.type === 'movie' ? '🎬 Movie' : '📺 TV Show'}
+                      </span>
+                      {scanDetails.item.year && (
+                        <span className="text-purple-300">• {scanDetails.item.year}</span>
+                      )}
+                      {scanDetails.item.has_physical && (
+                        <span className="px-2 py-1 bg-green-500/20 border border-green-500/50 text-green-300 text-xs rounded font-semibold">
+                          ✓ Has Physical Copy
+                        </span>
+                      )}
+                    </div>
+                    
+                    {scanDetails.item.genres && (
+                      <div className="mt-3">
+                        <p className="text-purple-200 text-sm mb-2">Genres:</p>
+                        <div className="flex flex-wrap gap-2">
+                          {scanDetails.item.genres.split(',').map((genre, gIdx) => (
+                            <span key={gIdx} className="px-3 py-1 bg-purple-500/20 border border-purple-500/30 text-purple-200 text-sm rounded">
+                              {genre.trim()}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    
+                    <div className="mt-3 pt-3 border-t border-white/10 grid grid-cols-2 gap-2 text-sm">
+                      {scanDetails.item.tmdb_id && (
+                        <div>
+                          <span className="text-purple-300">TMDB ID:</span>
+                          <span className="text-white ml-2">{scanDetails.item.tmdb_id}</span>
+                        </div>
+                      )}
+                      {scanDetails.item.tvdb_id && (
+                        <div>
+                          <span className="text-purple-300">TVDB ID:</span>
+                          <span className="text-white ml-2">{scanDetails.item.tvdb_id}</span>
+                        </div>
+                      )}
+                      {scanDetails.item.barcode && (
+                        <div>
+                          <span className="text-purple-300">Barcode:</span>
+                          <span className="text-white ml-2 font-mono">{scanDetails.item.barcode}</span>
+                        </div>
+                      )}
+                      {scanDetails.item.source && (
+                        <div>
+                          <span className="text-purple-300">Source:</span>
+                          <span className="text-white ml-2 capitalize">{scanDetails.item.source}</span>
+                        </div>
+                      )}
+                      {scanDetails.item.season_count && (
+                        <div>
+                          <span className="text-purple-300">Seasons:</span>
+                          <span className="text-white ml-2">{scanDetails.item.season_count}</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
                 </div>
               )}
 

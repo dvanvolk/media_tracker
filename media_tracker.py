@@ -236,6 +236,10 @@ def search_local_database(query, media_type=None, year=None):
         if similarity >= 80 or (contains_match and similarity >= 60):
             if year is None or year_match:
                 result = row.to_dict()
+                # Convert NaN values to None for JSON serialization
+                for key, value in result.items():
+                    if pd.isna(value):
+                        result[key] = None
                 result['similarity'] = similarity
                 result['match_type'] = 'local'
                 results.append(result)
