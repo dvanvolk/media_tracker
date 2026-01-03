@@ -1,0 +1,8 @@
+flask
+flask-cors
+pandas
+requests
+python-dotenv
+pyserial
+rapidfuzz
+
