@@ -241,25 +241,26 @@ def get_sonarr_quality_profile():
 def search_tmdb_movie(title, preferred_year=None):
     """Search for movie using Radarr's TMDB lookup, trying multiple title variations.
     Returns the best match, preferring results that match preferred_year if provided.
-    If multiple results exist, prefers older/more popular versions."""
+    Uses fuzzy matching to find the best title match when no year is specified."""
+    from difflib import SequenceMatcher
+
     all_results = []
-    
+
     # Try the full cleaned title first
     search_terms = [title]
-    
+
     # If title is long, try just the first few words (often the actual movie title)
     words = title.split()
     if len(words) > 3:
-        # Try first 3 words, then first 2 words
         search_terms.append(' '.join(words[:3]))
         search_terms.append(' '.join(words[:2]))
-    
+
     # Try removing common words that might interfere
     common_words = ['the', 'a', 'an', 'and', 'or', 'but']
     filtered_words = [w for w in words if w.lower() not in common_words]
     if len(filtered_words) < len(words) and len(filtered_words) > 0:
         search_terms.append(' '.join(filtered_words))
-    
+
     # Collect all results from all search terms
     for search_term in search_terms:
         try:
@@ -272,7 +273,6 @@ def search_tmdb_movie(title, preferred_year=None):
             r.raise_for_status()
             results = r.json()
             if results:
-                # Add results, avoiding duplicates by tmdbId
                 seen_ids = {m.get("tmdbId") for m in all_results}
                 for movie in results:
                     if movie.get("tmdbId") not in seen_ids:
@@ -280,45 +280,138 @@ def search_tmdb_movie(title, preferred_year=None):
                         seen_ids.add(movie.get("tmdbId"))
         except (requests.RequestException, ValueError, KeyError):
             continue
-    
+
     if not all_results:
         return None
-    
+
     # Debug: Show all found results
     if len(all_results) > 1:
         print(f"Found {len(all_results)} movie matches:")
-        for i, m in enumerate(all_results[:5], 1):  # Show first 5
+        for i, m in enumerate(all_results[:5], 1):
             print(f"  {i}. {m.get('title', 'Unknown')} ({m.get('year', 'unknown year')})")
-    
+
     # If we have a preferred year, prioritize exact matches
     if preferred_year:
         exact_matches = [m for m in all_results if m.get("year") == preferred_year]
         if exact_matches:
-            # Among exact matches, prefer the one with highest popularity/rating
             exact_matches.sort(key=lambda x: (
                 x.get("popularity", 0),
                 x.get("ratings", {}).get("value", 0) if isinstance(x.get("ratings"), dict) else 0
             ), reverse=True)
             return exact_matches[0]
-        
-        # If no exact match, prefer closest year (within 2 years)
+
         close_matches = [m for m in all_results if abs(m.get("year", 0) - preferred_year) <= 2]
         if close_matches:
             close_matches.sort(key=lambda x: abs(x.get("year", 0) - preferred_year))
             return close_matches[0]
-    
-    # If no preferred year or no matches, prefer older versions (often the original)
-    # This helps select the original over remakes when no year is specified
-    # Sort by year ascending (oldest first), then by popularity descending
-    all_results.sort(key=lambda x: (
-        x.get("year", 9999) if x.get("year") else 9999,  # Older first (ascending year)
-        -x.get("popularity", 0)  # Higher popularity first (negative for reverse)
-    ))
-    
-    selected = all_results[0]
-    if len(all_results) > 1 and not preferred_year:
-        print(f"Multiple versions found. Selected oldest: {selected.get('title')} ({selected.get('year')})")
-    
+
+    # Calculate similarity for each result
+    def calculate_similarity(movie_title, search_title):
+        movie_lower = movie_title.lower().strip()
+        search_lower = search_title.lower().strip()
+
+        if movie_lower == search_lower:
+            return 1.0
+
+        return SequenceMatcher(None, movie_lower, search_lower).ratio()
+
+    # NEW: Check for perfect title matches first
+    perfect_matches = []
+    for movie in all_results:
+        movie_title = movie.get("title", "")
+        similarity = calculate_similarity(movie_title, title)
+        if similarity == 1.0:
+            perfect_matches.append(movie)
+
+    # If we have perfect title match(es), choose the most popular one
+    if perfect_matches:
+        print(f"Found {len(perfect_matches)} perfect title match(es)")
+        perfect_matches.sort(key=lambda x: x.get("popularity", 0), reverse=True)
+        selected = perfect_matches[0]
+        print(f"Selected perfect match: {selected.get('title')} ({selected.get('year')})")
+        return selected
+
+    # Otherwise, use fuzzy matching with combined score
+    scored_results = []
+    for movie in all_results:
+        movie_title = movie.get("title", "")
+        similarity = calculate_similarity(movie_title, title)
+
+        max_popularity = max((m.get("popularity", 0) for m in all_results), default=1)
+        normalized_popularity = movie.get("popularity", 0) / max_popularity if max_popularity > 0 else 0
+
+        # Weight: 80% similarity, 20% popularity
+        combined_score = (similarity * 0.8) + (normalized_popularity * 0.2)
+
+        scored_results.append({
+            "movie": movie,
+            "similarity": similarity,
+            "popularity": movie.get("popularity", 0),
+            "combined_score": combined_score
+        })
+
+    scored_results.sort(key=lambda x: x["combined_score"], reverse=True)
+
+    if len(scored_results) > 1:
+        print(f"\nTop matches by similarity:")
+        for i, result in enumerate(scored_results[:3], 1):
+            movie = result["movie"]
+            print(f"  {i}. {movie.get('title')} ({movie.get('year')}) - "
+                  f"Similarity: {result['similarity']:.2f}, Score: {result['combined_score']:.2f}")
+
+    selected = scored_results[0]["movie"]
+    print(f"Selected: {selected.get('title')} ({selected.get('year')})")
+
+    return selected
+    # If no preferred year, use fuzzy matching to find best title match
+    # Calculate similarity ratio for each result
+    def calculate_similarity(movie_title, search_title):
+        """Calculate similarity between movie title and search title"""
+        # Normalize both titles for comparison
+        movie_lower = movie_title.lower().strip()
+        search_lower = search_title.lower().strip()
+
+        # Direct match gets highest score
+        if movie_lower == search_lower:
+            return 1.0
+
+        # Use SequenceMatcher for fuzzy matching
+        return SequenceMatcher(None, movie_lower, search_lower).ratio()
+
+    # Score each movie by title similarity and popularity
+    scored_results = []
+    for movie in all_results:
+        movie_title = movie.get("title", "")
+        similarity = calculate_similarity(movie_title, title)
+
+        # Combine similarity score with popularity (normalized)
+        # Similarity is weighted heavily (80%), popularity is 20%
+        max_popularity = max((m.get("popularity", 0) for m in all_results), default=1)
+        normalized_popularity = movie.get("popularity", 0) / max_popularity if max_popularity > 0 else 0
+
+        combined_score = (similarity * 0.8) + (normalized_popularity * 0.2)
+
+        scored_results.append({
+            "movie": movie,
+            "similarity": similarity,
+            "popularity": movie.get("popularity", 0),
+            "combined_score": combined_score
+        })
+
+    # Sort by combined score (descending)
+    scored_results.sort(key=lambda x: x["combined_score"], reverse=True)
+
+    # Show top matches for debugging
+    if len(scored_results) > 1:
+        print(f"\nTop matches by similarity:")
+        for i, result in enumerate(scored_results[:3], 1):
+            movie = result["movie"]
+            print(f"  {i}. {movie.get('title')} ({movie.get('year')}) - "
+                  f"Similarity: {result['similarity']:.2f}, Score: {result['combined_score']:.2f}")
+
+    selected = scored_results[0]["movie"]
+    print(f"Selected: {selected.get('title')} ({selected.get('year')})")
+
     return selected
 
 def search_tvdb_series(title):
@@ -383,6 +476,176 @@ def add_series(series):
             print(f"Sonarr returned status {r.status_code}: {r.text}")
     except Exception as e:
         print(f"Error adding to Sonarr: {e}")
+
+# ========== BATCH MODE ====================
+
+def batch_scan_and_review(df):
+    """Batch mode: collect barcodes, lookup titles, then review before adding"""
+    print(f"Opening serial port {SERIAL_PORT} at {SERIAL_BAUDRATE} baud...")
+    try:
+        ser = serial.Serial(SERIAL_PORT, SERIAL_BAUDRATE, timeout=1)
+        print("Serial port opened.")
+        print("\n=== BATCH MODE ===")
+        print("Scan barcodes. Press Ctrl+C when done scanning to review results.")
+    except serial.SerialException as e:
+        print(f"Error opening serial port: {e}")
+        return
+
+    barcodes = []
+
+    try:
+        # Phase 1: Collect barcodes
+        while True:
+            if ser.in_waiting > 0:
+                barcode = ser.readline().decode('utf-8').strip()
+                if not barcode:
+                    continue
+
+                if barcode in [b[0] for b in barcodes]:
+                    print(f"Barcode {barcode} already in batch, skipping.")
+                    continue
+
+                if barcode in df["barcode"].values:
+                    print(f"Barcode {barcode} already in database, skipping.")
+                    continue
+
+                barcodes.append((barcode, None, None))  # (barcode, raw_title, cleaned_title)
+                print(f"[{len(barcodes)}] Added: {barcode}")
+
+    except KeyboardInterrupt:
+        print(f"\n\nCollected {len(barcodes)} barcodes. Starting lookup...\n")
+    finally:
+        ser.close()
+        print("Serial port closed.")
+
+    if not barcodes:
+        print("No barcodes collected.")
+        return
+
+    # Phase 2: Lookup titles (conserve API calls)
+    print("\n=== LOOKING UP TITLES ===")
+    results = []
+    for i, (barcode, _, _) in enumerate(barcodes, 1):
+        print(f"[{i}/{len(barcodes)}] Looking up {barcode}...", end=" ")
+        raw_title = lookup_barcode(barcode)
+
+        if not raw_title:
+            print("NOT FOUND")
+            results.append((barcode, None, None, None, None, None))
+            time.sleep(0.5)  # Rate limit protection
+            continue
+
+        print(f"✓")
+        media_type = guess_type(raw_title)
+        extracted_year = extract_year(raw_title)
+        cleaned_title = clean_title(raw_title)
+
+        results.append((barcode, raw_title, cleaned_title, media_type, extracted_year, None))
+        time.sleep(0.3)  # Rate limit protection between lookups
+
+    # Phase 3: Search TMDB/TVDB for matches
+    print("\n=== SEARCHING FOR MATCHES ===")
+    final_results = []
+    for i, (barcode, raw_title, cleaned_title, media_type, extracted_year, _) in enumerate(results, 1):
+        if not cleaned_title:
+            final_results.append((barcode, raw_title, cleaned_title, media_type, extracted_year, None))
+            continue
+
+        print(f"\n[{i}/{len(results)}] Searching: {cleaned_title}")
+
+        if media_type == "movie":
+            match = search_tmdb_movie(cleaned_title, preferred_year=extracted_year)
+        else:
+            match = search_tvdb_series(cleaned_title)
+
+        final_results.append((barcode, raw_title, cleaned_title, media_type, extracted_year, match))
+
+    # Phase 4: Review and approve
+    print("\n\n" + "="*60)
+    print("=== REVIEW RESULTS ===")
+    print("="*60)
+
+    for i, (barcode, raw_title, cleaned_title, media_type, extracted_year, match) in enumerate(final_results, 1):
+        print(f"\n[{i}/{len(final_results)}]")
+        print(f"  Barcode: {barcode}")
+        print(f"  Raw title: {raw_title or 'NOT FOUND'}")
+
+        if not match:
+            print(f"  Status: ❌ No match found")
+            continue
+
+        print(f"  Cleaned: {cleaned_title}")
+        print(f"  Type: {media_type}")
+        if extracted_year:
+            print(f"  Year from barcode: {extracted_year}")
+
+        if media_type == "movie":
+            print(f"  Match: {match.get('title')} ({match.get('year')})")
+            print(f"  TMDB ID: {match.get('tmdbId')}")
+        else:
+            print(f"  Match: {match.get('title')} ({match.get('year')})")
+            print(f"  TVDB ID: {match.get('tvdbId')}")
+            print(f"  Seasons: {len(match.get('seasons', []))}")
+
+        # Check if already exists
+        if media_type == "movie":
+            existing = df[(df["type"] == "movie") & (df["tmdb_id"].astype(str).str.replace('.0', '', regex=False) == str(match["tmdbId"]))]
+        else:
+            existing = df[(df["type"] == "series") & (df["tvdb_id"].astype(str).str.replace('.0', '', regex=False) == str(match["tvdbId"]))]
+
+        if not existing.empty:
+            print(f"  ⚠️  Already in database")
+            response = input("  Update with physical copy info? (y/n/q to quit): ").strip().lower()
+        else:
+            response = input("  Add this to Radarr/Sonarr? (y/n/q to quit): ").strip().lower()
+
+        if response == 'q':
+            print("\nReview cancelled.")
+            break
+        elif response == 'y':
+            if not existing.empty:
+                # Update existing
+                df.loc[existing.index[0], "has_physical"] = True
+                df.loc[existing.index[0], "barcode"] = barcode
+                save_db(df)
+                print("  ✓ Updated with physical copy info")
+            else:
+                # Add new
+                if media_type == "movie":
+                    add_movie(match)
+                    new_row = pd.DataFrame([{
+                        "type": "movie",
+                        "title": match["title"],
+                        "year": match["year"],
+                        "tmdb_id": match["tmdbId"],
+                        "tvdb_id": None,
+                        "season_count": None,
+                        "has_physical": True,
+                        "barcode": barcode,
+                        "source": "barcode_batch"
+                    }])
+                else:
+                    add_series(match)
+                    new_row = pd.DataFrame([{
+                        "type": "series",
+                        "title": match["title"],
+                        "year": match["year"],
+                        "tmdb_id": None,
+                        "tvdb_id": match["tvdbId"],
+                        "season_count": len(match["seasons"]),
+                        "has_physical": True,
+                        "barcode": barcode,
+                        "source": "barcode_batch"
+                    }])
+
+                df = pd.concat([df, new_row], ignore_index=True)
+                save_db(df)
+                print("  ✓ Added and saved")
+        else:
+            print("  ⏭️  Skipped")
+
+    print("\n✓ Batch review complete!")
+    return df
 
 # ========== SCAN LOOP =====================
 
@@ -507,13 +770,22 @@ def scan_loop(df):
 # ================= MAIN ===================
 
 def main():
+    import sys
+
     df = load_or_create_db()
     df = import_radarr(df)
     df = import_sonarr(df)
     save_db(df)
 
     print(f"Loaded {len(df)} items.")
-    scan_loop(df)
+
+    # Check for batch mode flag
+    if len(sys.argv) > 1 and sys.argv[1] == "--batch":
+        print("\nStarting BATCH MODE...")
+        batch_scan_and_review(df)
+    else:
+        print("\nStarting LIVE MODE (use --batch flag for batch mode)...")
+        scan_loop(df)
 
 if __name__ == "__main__":
     main()
